@@ -124,7 +124,7 @@ async def start_agora_agent(payload: StartAgentRequest):
     if not all([app_id, pipeline_id, customer_id, customer_secret]):
         raise HTTPException(
             status_code=500,
-            detail="Agora credentials missing in .env (AGORA_APP_ID, AGORA_PIPELINE_ID, AGORA_CUSTOMER_ID, AGORA_CUSTOMER_SECRET)",
+            detail="Agora credentials missing in .env",
         )
 
     # Basic Auth Token Generation
@@ -136,9 +136,56 @@ async def start_agora_agent(payload: StartAgentRequest):
         "Authorization": f"Basic {base64_creds}",
         "Content-Type": "application/json",
     }
+    
     body = {
         "name": payload.channel_name,
         "pipeline_id": pipeline_id,
+        "properties": {
+            "asr": {
+                "vendor": "deepgram",
+                "params": {
+                    "resource_id": "2ca6dcf4ded340b6b67f0ccf4972a00d",
+                    "model": "nova-3",
+                    "keyterm": "",
+                    "language": "en"
+                }
+            },
+            "llm": {
+                "vendor": "openai",
+                "params": {
+                    "model": "gpt-4.1-mini",
+                    "resource_id": "24731f4ef93e4d33a85a4c4088633bcb"
+                },
+                "system_messages": [
+                    {
+                        "role": "system",
+                        "content": (
+                            "You are an expert AI Technical Interviewer for software engineering roles.\n"
+                            "Conduct a structured, professional, and adaptive technical interview.\n"
+                            "Ask one crisp question at a time.\n"
+                            "Evaluate candidate responses on technical accuracy and depth.\n"
+                            "Adjust follow-up questions dynamically based on what the candidate answers.\n"
+                            "Keep your spoken responses short and natural (under 2-3 sentences)."
+                        )
+                    }
+                ],
+                "greeting_message": "Hello! I am your AI Technical Interviewer today. Whenever you are ready, please introduce yourself and mention your primary tech stack.",
+                "failure_message": "Please hold on a second."
+            },
+            "tts": {
+                "vendor": "minimax",
+                "params": {
+                    "model": "speech-2.8-turbo",
+                    "resource_id": "155b2afcadce4c93a85231c74e2e71d6",
+                    "voice_setting": {
+                        "voice_id": "English_radiant_girl"
+                    }
+                }
+            },
+            "mllm": {
+                "enable": False
+            }
+        }
     }
 
     async with httpx.AsyncClient() as http_client:
