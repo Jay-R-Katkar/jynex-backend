@@ -1,3 +1,4 @@
+import base64
 import io
 import json
 import os
@@ -7,6 +8,7 @@ from fastapi import FastAPI, File, HTTPException, Response, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 from groq import Groq
 from gtts import gTTS
+import httpx
 from pydantic import BaseModel
 
 load_dotenv()
@@ -44,7 +46,6 @@ def get_active_model():
                 print(f"[SELECTED MODEL]: {pref}")
                 return pref
 
-        # Pick only standard text LLM models (skip whisper, compound, vision)
         for m_id in available_ids:
             lower = m_id.lower()
             if (
@@ -99,6 +100,10 @@ class EvaluationRequest(BaseModel):
     conversation: List[DialogueItem]
 
 
+class StartAgentRequest(BaseModel):
+    channel_name: str
+
+
 @app.get("/")
 def home():
     return {
@@ -106,6 +111,44 @@ def home():
         "active_model": ACTIVE_CHAT_MODEL,
         "message": "Voice Interview Engine Live",
     }
+
+
+# Agora Conversational AI: Start Agent in Channel Endpoint
+@app.post("/api/agora/start-agent")
+async def start_agora_agent(payload: StartAgentRequest):
+    app_id = os.getenv("AGORA_APP_ID")
+    pipeline_id = os.getenv("AGORA_PIPELINE_ID")
+    customer_id = os.getenv("AGORA_CUSTOMER_ID")
+    customer_secret = os.getenv("AGORA_CUSTOMER_SECRET")
+
+    if not all([app_id, pipeline_id, customer_id, customer_secret]):
+        raise HTTPException(
+            status_code=500,
+            detail="Agora credentials missing in .env (AGORA_APP_ID, AGORA_PIPELINE_ID, AGORA_CUSTOMER_ID, AGORA_CUSTOMER_SECRET)",
+        )
+
+    # Basic Auth Token Generation
+    raw_creds = f"{customer_id}:{customer_secret}"
+    base64_creds = base64.b64encode(raw_creds.encode("utf-8")).decode("utf-8")
+
+    url = f"https://api.agora.io/api/conversational-ai-agent/v2/projects/{app_id}/join"
+    headers = {
+        "Authorization": f"Basic {base64_creds}",
+        "Content-Type": "application/json",
+    }
+    body = {
+        "name": payload.channel_name,
+        "pipeline_id": pipeline_id,
+    }
+
+    async with httpx.AsyncClient() as http_client:
+        try:
+            response = await http_client.post(url, headers=headers, json=body, timeout=15.0)
+            if response.status_code >= 400:
+                raise HTTPException(status_code=response.status_code, detail=response.text)
+            return {"status": "success", "data": response.json()}
+        except httpx.RequestError as exc:
+            raise HTTPException(status_code=500, detail=f"Request to Agora failed: {str(exc)}")
 
 
 # 1. Text-based Adaptive Question Endpoint
