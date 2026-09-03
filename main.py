@@ -104,6 +104,10 @@ class StartAgentRequest(BaseModel):
     channel_name: str
 
 
+class StopAgentRequest(BaseModel):
+    agent_id: str
+
+
 @app.get("/")
 def home():
     return {
@@ -198,6 +202,72 @@ async def start_agora_agent(payload: StartAgentRequest):
             return {"status": "success", "data": response.json()}
         except httpx.RequestError as exc:
             raise HTTPException(status_code=500, detail=f"Request to Agora failed: {str(exc)}")
+
+
+# Agora Conversational AI: Stop Agent Endpoint
+@app.post("/api/agora/stop-agent")
+async def stop_agora_agent(payload: StopAgentRequest):
+    app_id = os.getenv("AGORA_APP_ID")
+    customer_id = os.getenv("AGORA_CUSTOMER_ID")
+    customer_secret = os.getenv("AGORA_CUSTOMER_SECRET")
+
+    if not all([app_id, customer_id, customer_secret]):
+        raise HTTPException(
+            status_code=500,
+            detail="Agora credentials missing in .env",
+        )
+
+    raw_creds = f"{customer_id}:{customer_secret}"
+    base64_creds = base64.b64encode(raw_creds.encode("utf-8")).decode("utf-8")
+
+    url = f"https://api.agora.io/api/conversational-ai-agent/v2/projects/{app_id}/leave"
+    headers = {
+        "Authorization": f"Basic {base64_creds}",
+        "Content-Type": "application/json",
+    }
+    body = {
+        "agent_id": payload.agent_id
+    }
+
+    async with httpx.AsyncClient() as http_client:
+        try:
+            response = await http_client.post(url, headers=headers, json=body, timeout=15.0)
+            if response.status_code >= 400:
+                raise HTTPException(status_code=response.status_code, detail=response.text)
+            return {"status": "success", "message": "Agent stopped successfully", "data": response.json()}
+        except httpx.RequestError as exc:
+            raise HTTPException(status_code=500, detail=f"Request to Agora failed: {str(exc)}")
+
+
+# 1. Text-based Adaptive Question Endpoint
+@app.post("/api/interview/question")
+def generate_next_question(data: InterviewRequest):
+    system_prompt = (
+        "You are an expert AI technical interviewer conducting a technical interview. "
+        "Based on the candidate's answer, generate exactly ONE follow-up technical question. "
+        "Rules:\n"
+        "- Dive into technical trade-offs, architecture, bottlenecks, or edge cases.\n"
+        "- Keep it under 2 sentences.\n"
+        "- Output ONLY the question text. Do not add quotes, greetings, or intro."
+    )
+
+    messages = [
+        {"role": "system", "content": system_prompt},
+        {"role": "user", "content": data.candidate_answer},
+    ]
+
+    generated_question = call_groq_llm(messages)
+
+    if not generated_question:
+        generated_question = "Could you elaborate on the performance optimizations and trade-offs in your implementation?"
+
+    print(f"\n[FINAL AI QUESTION]: {generated_question}\n")
+
+    return {
+        "status": "success",
+        "candidate_answer": data.candidate_answer,
+        "next_question": generated_question,
+    }
 
 
 # 2. Text-to-Speech (TTS) Endpoint
