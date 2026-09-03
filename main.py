@@ -139,11 +139,9 @@ async def start_agora_agent(payload: StartAgentRequest):
     body = {
         "name": payload.channel_name,
         "pipeline_id": pipeline_id,
-        "agent_rtc_uid": 1001,
-        "remote_rtc_uids": ["*"],
         "properties": {
             "channel": payload.channel_name,
-            "agent_rtc_uid": 1001,
+            "agent_rtc_uid": "1001",
             "remote_rtc_uids": ["*"],
             "asr": {
                 "vendor": "deepgram",
@@ -200,36 +198,6 @@ async def start_agora_agent(payload: StartAgentRequest):
             return {"status": "success", "data": response.json()}
         except httpx.RequestError as exc:
             raise HTTPException(status_code=500, detail=f"Request to Agora failed: {str(exc)}")
-
-# 1. Text-based Adaptive Question Endpoint
-@app.post("/api/interview/question")
-def generate_next_question(data: InterviewRequest):
-    system_prompt = (
-        "You are an expert AI technical interviewer conducting a technical interview. "
-        "Based on the candidate's answer, generate exactly ONE follow-up technical question. "
-        "Rules:\n"
-        "- Dive into technical trade-offs, architecture, bottlenecks, or edge cases.\n"
-        "- Keep it under 2 sentences.\n"
-        "- Output ONLY the question text. Do not add quotes, greetings, or intro."
-    )
-
-    messages = [
-        {"role": "system", "content": system_prompt},
-        {"role": "user", "content": data.candidate_answer},
-    ]
-
-    generated_question = call_groq_llm(messages)
-
-    if not generated_question:
-        generated_question = "Could you elaborate on the performance optimizations and trade-offs in your implementation?"
-
-    print(f"\n[FINAL AI QUESTION]: {generated_question}\n")
-
-    return {
-        "status": "success",
-        "candidate_answer": data.candidate_answer,
-        "next_question": generated_question,
-    }
 
 
 # 2. Text-to-Speech (TTS) Endpoint
