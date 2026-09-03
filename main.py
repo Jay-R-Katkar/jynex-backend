@@ -127,7 +127,6 @@ async def start_agora_agent(payload: StartAgentRequest):
             detail="Agora credentials missing in .env",
         )
 
-    # Basic Auth Token Generation
     raw_creds = f"{customer_id}:{customer_secret}"
     base64_creds = base64.b64encode(raw_creds.encode("utf-8")).decode("utf-8")
 
@@ -140,9 +139,11 @@ async def start_agora_agent(payload: StartAgentRequest):
     body = {
         "name": payload.channel_name,
         "pipeline_id": pipeline_id,
+        "agent_rtc_uid": 1001,
+        "remote_rtc_uids": ["*"],
         "properties": {
             "channel": payload.channel_name,
-            "agent_rtc_uid": "1001",
+            "agent_rtc_uid": 1001,
             "remote_rtc_uids": ["*"],
             "asr": {
                 "vendor": "deepgram",
@@ -199,7 +200,6 @@ async def start_agora_agent(payload: StartAgentRequest):
             return {"status": "success", "data": response.json()}
         except httpx.RequestError as exc:
             raise HTTPException(status_code=500, detail=f"Request to Agora failed: {str(exc)}")
-
 
 # 1. Text-based Adaptive Question Endpoint
 @app.post("/api/interview/question")
