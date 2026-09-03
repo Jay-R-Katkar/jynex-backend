@@ -140,9 +140,10 @@ async def start_agora_agent(payload: StartAgentRequest):
     body = {
         "name": payload.channel_name,
         "pipeline_id": pipeline_id,
-        "agent_rtc_uid": "1001",
-        "remote_rtc_uids": ["*"],
         "properties": {
+            "channel": payload.channel_name,
+            "agent_rtc_uid": "1001",
+            "remote_rtc_uids": ["*"],
             "asr": {
                 "vendor": "deepgram",
                 "params": {
