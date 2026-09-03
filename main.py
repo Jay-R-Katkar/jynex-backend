@@ -2,7 +2,8 @@ import base64
 import io
 import json
 import os
-from typing import List
+import time
+from typing import List, Optional
 from dotenv import load_dotenv
 from fastapi import FastAPI, File, HTTPException, Response, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
@@ -11,11 +12,16 @@ from gtts import gTTS
 import httpx
 from pydantic import BaseModel
 
+try:
+    from agora_token_builder import RtcTokenBuilder
+except ImportError:
+    RtcTokenBuilder = None
+
 load_dotenv()
 
-app = FastAPI(title="Adaptive Voice Interview Engine")
+app = FastAPI(title="Adaptive Voice Interview Engine - Jynex")
 
-# CORS Setup
+# CORS Setup - Member 2 (Frontend) can connect seamlessly
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
@@ -27,7 +33,6 @@ app.add_middleware(
 client = Groq(api_key=os.getenv("GROQ_API_KEY"))
 
 
-# Automatically discover active chat models from your Groq account
 def get_active_model():
     preferred_order = [
         "llama-3.3-70b-versatile",
@@ -81,6 +86,7 @@ def call_groq_llm(messages, max_tokens=200, temperature=0.6):
     return None
 
 
+# ===================== PYDANTIC MODELS =====================
 class InterviewRequest(BaseModel):
     candidate_answer: str
 
@@ -108,6 +114,12 @@ class StopAgentRequest(BaseModel):
     agent_id: str
 
 
+class TokenRequest(BaseModel):
+    channel_name: str
+    uid: Optional[int] = 0
+
+
+# ===================== BASE HEALTH CHECK =====================
 @app.get("/")
 def home():
     return {
@@ -117,7 +129,53 @@ def home():
     }
 
 
-# Agora Conversational AI: Start Agent in Channel Endpoint
+# ===================== AGORA RTC TOKEN GENERATOR (FOR FRONTEND) =====================
+@app.post("/api/agora/token")
+def generate_agora_rtc_token(payload: TokenRequest):
+    app_id = os.getenv("AGORA_APP_ID")
+    app_certificate = os.getenv("AGORA_APP_CERTIFICATE", "")
+
+    if not app_id:
+        raise HTTPException(status_code=500, detail="AGORA_APP_ID missing in .env")
+
+    # If project certificate is not enabled in Agora console, return empty token
+    if not app_certificate:
+        return {
+            "status": "success",
+            "token": None,
+            "app_id": app_id,
+            "channel_name": payload.channel_name,
+            "uid": payload.uid,
+            "message": "App certificate not configured; join with token=null",
+        }
+
+    if not RtcTokenBuilder:
+        raise HTTPException(status_code=500, detail="agora-token-builder not installed")
+
+    expiration_time_in_seconds = 3600 * 24  # 24 hours validity
+    current_timestamp = int(time.time())
+    privilege_expired_ts = current_timestamp + expiration_time_in_seconds
+
+    # Role 1 = Attendee/Publisher
+    token = RtcTokenBuilder.buildTokenWithUid(
+        app_id,
+        app_certificate,
+        payload.channel_name,
+        payload.uid,
+        1,
+        privilege_expired_ts,
+    )
+
+    return {
+        "status": "success",
+        "token": token,
+        "app_id": app_id,
+        "channel_name": payload.channel_name,
+        "uid": payload.uid,
+    }
+
+
+# ===================== AGORA START AGENT =====================
 @app.post("/api/agora/start-agent")
 async def start_agora_agent(payload: StartAgentRequest):
     app_id = os.getenv("AGORA_APP_ID")
@@ -204,7 +262,7 @@ async def start_agora_agent(payload: StartAgentRequest):
             raise HTTPException(status_code=500, detail=f"Request to Agora failed: {str(exc)}")
 
 
-# Agora Conversational AI: Stop Agent Endpoint
+# ===================== AGORA STOP AGENT =====================
 @app.post("/api/agora/stop-agent")
 async def stop_agora_agent(payload: StopAgentRequest):
     app_id = os.getenv("AGORA_APP_ID")
@@ -236,7 +294,7 @@ async def stop_agora_agent(payload: StopAgentRequest):
             raise HTTPException(status_code=500, detail=f"Request to Agora failed: {str(exc)}")
 
 
-# 1. Text-based Adaptive Question Endpoint
+# ===================== GROQ ADAPTIVE QUESTION =====================
 @app.post("/api/interview/question")
 def generate_next_question(data: InterviewRequest):
     system_prompt = (
@@ -258,8 +316,6 @@ def generate_next_question(data: InterviewRequest):
     if not generated_question:
         generated_question = "Could you elaborate on the performance optimizations and trade-offs in your implementation?"
 
-    print(f"\n[FINAL AI QUESTION]: {generated_question}\n")
-
     return {
         "status": "success",
         "candidate_answer": data.candidate_answer,
@@ -267,7 +323,7 @@ def generate_next_question(data: InterviewRequest):
     }
 
 
-# 2. Text-to-Speech (TTS) Endpoint
+# ===================== TTS ENDPOINT =====================
 @app.post("/api/interview/speak")
 def text_to_speech(data: TTSRequest):
     try:
@@ -294,14 +350,13 @@ def text_to_speech(data: TTSRequest):
         raise HTTPException(status_code=500, detail=str(e))
 
 
-# 3. Speech-to-Text (STT) + Question Generation Pipeline
+# ===================== GROQ STT + QUESTION PIPELINE =====================
 @app.post("/api/interview/voice-question")
 async def voice_interview_pipeline(file: UploadFile = File(...)):
     try:
         audio_bytes = await file.read()
         audio_file = (file.filename, audio_bytes)
 
-        # Groq Whisper
         transcription = client.audio.transcriptions.create(
             file=audio_file,
             model="whisper-large-v3",
@@ -333,7 +388,7 @@ async def voice_interview_pipeline(file: UploadFile = File(...)):
         return {"status": "error", "error_message": str(e)}
 
 
-# 4. Evaluation Engine Endpoint
+# ===================== EVALUATION REPORT ENGINE =====================
 @app.post("/api/interview/evaluate")
 def evaluate_interview(data: EvaluationRequest):
     transcript = "\n".join(
