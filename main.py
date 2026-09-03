@@ -220,21 +220,18 @@ async def stop_agora_agent(payload: StopAgentRequest):
     raw_creds = f"{customer_id}:{customer_secret}"
     base64_creds = base64.b64encode(raw_creds.encode("utf-8")).decode("utf-8")
 
-    url = f"https://api.agora.io/api/conversational-ai-agent/v2/projects/{app_id}/leave"
+    url = f"https://api.agora.io/api/conversational-ai-agent/v2/projects/{app_id}/agents/{payload.agent_id}/leave"
     headers = {
         "Authorization": f"Basic {base64_creds}",
         "Content-Type": "application/json",
     }
-    body = {
-        "agent_id": payload.agent_id
-    }
 
     async with httpx.AsyncClient() as http_client:
         try:
-            response = await http_client.post(url, headers=headers, json=body, timeout=15.0)
+            response = await http_client.post(url, headers=headers, timeout=15.0)
             if response.status_code >= 400:
                 raise HTTPException(status_code=response.status_code, detail=response.text)
-            return {"status": "success", "message": "Agent stopped successfully", "data": response.json()}
+            return {"status": "success", "message": "Agent stopped successfully"}
         except httpx.RequestError as exc:
             raise HTTPException(status_code=500, detail=f"Request to Agora failed: {str(exc)}")
 
