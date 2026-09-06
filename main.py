@@ -49,7 +49,7 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# ===================== DATABASE SETUP (TASK 1) =====================
+# ===================== DATABASE SETUP =====================
 MONGO_URI = os.getenv("MONGO_URI", "")
 db = None
 reports_collection = None
@@ -115,7 +115,7 @@ def call_groq_llm(messages, max_tokens=250, temperature=0.6):
         print(f"[Model {ACTIVE_CHAT_MODEL} failed]: {err}")
     return None
 
-# ===================== MULTI-AGENT PERSONAS (TASK 2) =====================
+# ===================== MULTI-AGENT PERSONAS =====================
 PERSONA_PROMPTS = {
     "alex": (
         "You are Alex, an Elite System Architect & Senior Tech Interviewer. "
@@ -147,8 +147,11 @@ class TokenRequest(BaseModel):
     uid: Optional[int] = 0
 
 class InterviewRequest(BaseModel):
-    candidate_answer: str
+    candidate_answer: Optional[str] = None
+    previous_answer: Optional[str] = None
+    role: Optional[str] = "Full-Stack Engineering"
     persona: Optional[str] = "alex"
+    question_index: Optional[int] = 0
 
 class TTSRequest(BaseModel):
     text: str
@@ -182,6 +185,24 @@ class SaveReportRequest(BaseModel):
     conversation: List[DialogueItem]
     timestamp: Optional[str] = None
 
+# ===================== HELPER FUNCTIONS =====================
+def build_rtc_token(channel_name: str, uid: int, role: int = 1) -> Optional[str]:
+    app_id = os.getenv("AGORA_APP_ID")
+    app_certificate = os.getenv("AGORA_APP_CERTIFICATE", "")
+    if not app_id or not app_certificate or not RtcTokenBuilder:
+        return None
+    
+    expiration_time_in_seconds = 3600 * 24
+    privilege_expired_ts = int(time.time()) + expiration_time_in_seconds
+    return RtcTokenBuilder.buildTokenWithUid(
+        app_id,
+        app_certificate,
+        channel_name,
+        uid,
+        role,
+        privilege_expired_ts,
+    )
+
 # ===================== ENDPOINTS =====================
 
 @app.get("/")
@@ -202,37 +223,16 @@ def generate_agora_rtc_token(payload: TokenRequest):
     if not app_id:
         raise HTTPException(status_code=500, detail="AGORA_APP_ID missing in environment variables")
 
-    if not app_certificate:
-        return {
-            "status": "success",
-            "token": None,
-            "app_id": app_id,
-            "channel_name": payload.channel_name,
-            "uid": payload.uid,
-            "message": "App certificate not configured; join with token=null",
-        }
-
-    if not RtcTokenBuilder:
-        raise HTTPException(status_code=500, detail="agora-token-builder library not installed")
-
-    expiration_time_in_seconds = 3600 * 24
-    privilege_expired_ts = int(time.time()) + expiration_time_in_seconds
-
-    token = RtcTokenBuilder.buildTokenWithUid(
-        app_id,
-        app_certificate,
-        payload.channel_name,
-        payload.uid,
-        1,
-        privilege_expired_ts,
-    )
+    target_uid = payload.uid if payload.uid is not None else 0
+    token = build_rtc_token(payload.channel_name, target_uid, role=1)
 
     return {
         "status": "success",
         "token": token,
         "app_id": app_id,
         "channel_name": payload.channel_name,
-        "uid": payload.uid,
+        "uid": target_uid,
+        "message": "Token generated successfully" if token else "App certificate not set; join with token=null"
     }
 
 # 2. Start Agora Conversational AI Agent
@@ -252,52 +252,61 @@ async def start_agora_agent(payload: StartAgentRequest):
     persona_key = payload.persona.lower() if payload.persona else "alex"
     system_instruction = PERSONA_PROMPTS.get(persona_key, PERSONA_PROMPTS["alex"])
 
+    agent_uid = 1001
+    agent_token = build_rtc_token(payload.channel_name, agent_uid, role=1)
+
     url = f"https://api.agora.io/api/conversational-ai-agent/v2/projects/{app_id}/join"
     headers = {
         "Authorization": f"Basic {base64_creds}",
         "Content-Type": "application/json",
     }
 
+    properties_dict = {
+        "channel": payload.channel_name,
+        "agent_rtc_uid": str(agent_uid),
+        "remote_rtc_uids": ["*"],
+        "asr": {
+            "vendor": "deepgram",
+            "params": {
+                "resource_id": "2ca6dcf4ded340b6b67f0ccf4972a00d",
+                "model": "nova-3",
+                "keyterm": "",
+                "language": "en"
+            }
+        },
+        "llm": {
+            "vendor": "openai",
+            "params": {
+                "model": "gpt-4.1-mini",
+                "resource_id": "24731f4ef93e4d33a85a4c4088633bcb"
+            },
+            "system_messages": [
+                {"role": "system", "content": system_instruction}
+            ],
+            "greeting_message": f"Hello! I am {persona_key.capitalize()}, your interviewer today. Whenever you are ready, please introduce yourself.",
+            "failure_message": "Please hold on a second."
+        },
+        "tts": {
+            "vendor": "minimax",
+            "params": {
+                "model": "speech-2.8-turbo",
+                "resource_id": "155b2afcadce4c93a85231c74e2e71d6",
+                "voice_setting": {
+                    "voice_id": "English_radiant_girl" if persona_key in ["emma", "sarah"] else "English_radiant_man"
+                }
+            }
+        },
+        "mllm": {"enable": False}
+    }
+
+    # Add agent token if certificate exists
+    if agent_token:
+        properties_dict["token"] = agent_token
+
     body = {
         "name": payload.channel_name,
         "pipeline_id": pipeline_id,
-        "properties": {
-            "channel": payload.channel_name,
-            "agent_rtc_uid": "1001",
-            "remote_rtc_uids": ["*"],
-            "asr": {
-                "vendor": "deepgram",
-                "params": {
-                    "resource_id": "2ca6dcf4ded340b6b67f0ccf4972a00d",
-                    "model": "nova-3",
-                    "keyterm": "",
-                    "language": "en"
-                }
-            },
-            "llm": {
-                "vendor": "openai",
-                "params": {
-                    "model": "gpt-4.1-mini",
-                    "resource_id": "24731f4ef93e4d33a85a4c4088633bcb"
-                },
-                "system_messages": [
-                    {"role": "system", "content": system_instruction}
-                ],
-                "greeting_message": f"Hello! I am {persona_key.capitalize()}, your interviewer today. Whenever you are ready, please introduce yourself.",
-                "failure_message": "Please hold on a second."
-            },
-            "tts": {
-                "vendor": "minimax",
-                "params": {
-                    "model": "speech-2.8-turbo",
-                    "resource_id": "155b2afcadce4c93a85231c74e2e71d6",
-                    "voice_setting": {
-                        "voice_id": "English_radiant_girl" if persona_key in ["emma", "sarah"] else "English_radiant_man"
-                    }
-                }
-            },
-            "mllm": {"enable": False}
-        }
+        "properties": properties_dict
     }
 
     async with httpx.AsyncClient() as http_client:
@@ -305,7 +314,14 @@ async def start_agora_agent(payload: StartAgentRequest):
             response = await http_client.post(url, headers=headers, json=body, timeout=15.0)
             if response.status_code >= 400:
                 raise HTTPException(status_code=response.status_code, detail=response.text)
-            return {"status": "success", "data": response.json()}
+            
+            resp_data = response.json()
+            agent_id = resp_data.get("agent_id") or resp_data.get("id") or resp_data.get("data", {}).get("agent_id")
+            return {
+                "status": "success",
+                "agent_id": agent_id,
+                "data": resp_data
+            }
         except httpx.RequestError as exc:
             raise HTTPException(status_code=500, detail=f"Request to Agora failed: {str(exc)}")
 
@@ -337,15 +353,23 @@ async def stop_agora_agent(payload: StopAgentRequest):
         except httpx.RequestError as exc:
             raise HTTPException(status_code=500, detail=f"Request to Agora failed: {str(exc)}")
 
-# 4. Adaptive Question Generation (Text-based Fallback)
+# 4. Adaptive Question Generation (Works smoothly with Frontend VAD)
 @app.post("/api/interview/question")
 def generate_next_question(data: InterviewRequest):
     persona_key = data.persona.lower() if data.persona else "alex"
     system_prompt = PERSONA_PROMPTS.get(persona_key, PERSONA_PROMPTS["alex"])
+    answer_text = data.candidate_answer or data.previous_answer or "I have experience building microservices and distributed databases."
+
+    prompt_content = (
+        f"Candidate is interviewing for: {data.role}. "
+        f"This is question #{data.question_index + 1}. "
+        f"Candidate's previous response: '{answer_text}'. "
+        "Ask a concise, challenging follow-up question (maximum 2 sentences) addressing performance, edge cases, or architecture."
+    )
 
     messages = [
         {"role": "system", "content": system_prompt},
-        {"role": "user", "content": data.candidate_answer},
+        {"role": "user", "content": prompt_content},
     ]
 
     generated_question = call_groq_llm(messages)
@@ -354,9 +378,12 @@ def generate_next_question(data: InterviewRequest):
 
     return {
         "status": "success",
-        "persona": persona_key,
-        "candidate_answer": data.candidate_answer,
+        "question": generated_question,
+        "q": generated_question,
         "next_question": generated_question,
+        "persona": persona_key,
+        "keywords": ["scaling", "latency", "resiliency", "architecture", "tradeoffs"],
+        "concept": f"{data.role} Deep Dive - Topic #{data.question_index + 1}",
     }
 
 # 5. Voice Question Pipeline (Groq Whisper Large V3 STT)
@@ -389,6 +416,7 @@ async def voice_interview_pipeline(file: UploadFile = File(...), persona: str = 
             "persona": persona_key,
             "candidate_transcribed_answer": transcribed_text,
             "next_question": next_q,
+            "question": next_q,
         }
     except Exception as e:
         return {"status": "error", "error_message": str(e)}
@@ -483,7 +511,6 @@ async def save_interview_report(payload: SaveReportRequest):
         except Exception as e:
             print(f"[DB SAVE ERROR]: {e}")
 
-    # In-memory fallback
     IN_MEMORY_REPORTS.append(report_doc)
     return {"status": "success", "message": "Report saved in memory cache", "session_id": payload.session_id}
 
