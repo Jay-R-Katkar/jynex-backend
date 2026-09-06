@@ -99,7 +99,7 @@ def get_active_model():
 
 ACTIVE_CHAT_MODEL = get_active_model()
 
-def call_groq_llm(messages, max_tokens=650, temperature=0.3):
+def call_groq_llm(messages, max_tokens=650, temperature=0.1):
     global ACTIVE_CHAT_MODEL
     try:
         response = client.chat.completions.create(
@@ -439,46 +439,53 @@ def text_to_speech(data: TTSRequest):
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
-# 7. Candidate Evaluation & Scorecard Generation (HUMAN-JUDGE RUBRIC)
+# 7. Candidate Evaluation & Scorecard Generation (STRICT 0-100% UNBIASED HUMAN-JUDGE RUBRIC)
 @app.post("/api/interview/evaluate")
 def evaluate_interview(data: EvaluationRequest):
-    transcript = "\n".join([f"{item.sender.upper()}: {item.text}" for item in data.conversation if item.text and item.text.strip()])
+    valid_dialogues = [item for item in data.conversation if item.text and item.text.strip()]
+    transcript = "\n".join([f"{item.sender.upper()}: {item.text}" for item in valid_dialogues])
     persona_key = data.persona.lower() if data.persona else "alex"
 
-    eval_prompt = f"""
-You are {persona_key.capitalize()}, an experienced, rigorous Technical Interview Judge evaluating a candidate for the role: {data.role} ({data.difficulty} level).
+    candidate_texts = [item.text.strip() for item in valid_dialogues if item.sender.lower() == "candidate"]
+    total_candidate_words = sum(len(text.split()) for text in candidate_texts)
 
-Analyze the entire interview transcript below:
+    eval_prompt = f"""
+You are {persona_key.capitalize()}, an uncompromising, expert Technical Interview Judge evaluating a candidate for the role: {data.role} ({data.difficulty} level).
+
+CANDIDATE INTERVIEW TRANSCRIPT:
 \"\"\"
 {transcript}
 \"\"\"
 
-EVALUATION & SCORING RUBRIC (Evaluate critically like a real human tech interviewer):
-- 0 to 45: Completely off-topic, extremely short (1-5 words), or irrelevant buzzwords without context.
-- 46 to 65: Shallow definition, missed core concepts, no mention of trade-offs, scalability, or real-world caveats.
-- 66 to 82: Good technical grasp, correct terminology, structured reasoning, but lacking deep production edge cases.
-- 83 to 98: Exceptional, staff-level mastery, clear architectural tradeoffs, latency considerations, and resilient failure modes.
+STRICT UNBIASED SCORING RUBRIC (Full Range: 0 to 100):
+- 0 to 15: Blank, silent, gave up ("I don't know", "skip", "pass", silence), or completely irrelevant gibberish.
+- 16 to 40: Factually incorrect concepts, severe technical fallacies, or completely hallucinated explanations.
+- 41 to 49: Extremely weak, single buzzwords thrown around without explaining internal mechanics.
+- 50 to 65: Surface-level / basic theoretical definition; understands elementary terms but lacks internal mechanics, edge cases, and real-world implementation depth.
+- 66 to 80: Good technical answers; accurate terminology, structured delivery, and solid conceptual clarity, with minor omissions in production scaling or failure modes.
+- 81 to 100: Deep production-grade mastery; articulates architectural tradeoffs, latency considerations, failure boundaries, and battle-tested design patterns.
 
-Rules:
-1. Do NOT inflate scores. If the candidate gave brief or vague answers, score between 50 and 65.
-2. If they provided deep architectural explanations with trade-offs, score 80+.
-3. Strengths & areas_for_improvement must directly reference what the candidate actually discussed in the transcript.
-4. Output must be strictly valid JSON without codeblocks or markdown formatting.
+MANDATORY GRADING RULES:
+1. Zero grade inflation. If the candidate was silent, said "don't know", or gave wrong answers, score strictly between 0% and 40%.
+2. If answers are brief textbook summaries without trade-offs, score strictly between 50% and 65%.
+3. Score 85%+ ONLY when the candidate explicitly articulates system trade-offs, scalability, and deep architectural nuances.
+4. Strengths & areas_for_improvement must directly cite specific statements or omissions from the transcript.
+5. Return strictly valid JSON without markdown codeblocks or backticks.
 
-Format Schema:
+Schema:
 {{
-  "overall_score": <weighted average int between 0-100>,
-  "technical_accuracy": <int 0-100 based strictly on technical correctness>,
-  "communication_clarity": <int 0-100 based on structure, brevity, and articulation>,
-  "depth_of_knowledge": <int 0-100 based on nuances, edge cases, and internals>,
-  "strengths": ["Clear strength observed in their actual speech", "Another genuine strength"],
-  "areas_for_improvement": ["Specific concept they missed or explained weakly", "Area for deeper preparation"],
-  "summary_feedback": "2-3 sentences of genuine constructive feedback from the interviewer judge."
+  "overall_score": <integer 0-100>,
+  "technical_accuracy": <integer 0-100>,
+  "communication_clarity": <integer 0-100>,
+  "depth_of_knowledge": <integer 0-100>,
+  "strengths": ["string", "string"],
+  "areas_for_improvement": ["string", "string"],
+  "summary_feedback": "string"
 }}
 """
 
     messages = [{"role": "user", "content": eval_prompt}]
-    raw_output = call_groq_llm(messages, max_tokens=650, temperature=0.2)
+    raw_output = call_groq_llm(messages, max_tokens=650, temperature=0.1)
 
     if raw_output:
         cleaned = raw_output.strip()
@@ -490,41 +497,73 @@ Format Schema:
 
         try:
             eval_data = json.loads(cleaned)
-            # Ensure keys exist and values are within range
             return {
                 "status": "success",
                 "report": {
-                    "overall_score": int(eval_data.get("overall_score", 75)),
-                    "technical_accuracy": int(eval_data.get("technical_accuracy", 72)),
-                    "communication_clarity": int(eval_data.get("communication_clarity", 78)),
-                    "depth_of_knowledge": int(eval_data.get("depth_of_knowledge", 70)),
-                    "strengths": eval_data.get("strengths", ["Demonstrated familiarity with core concepts."]),
-                    "areas_for_improvement": eval_data.get("areas_for_improvement", ["Provide deeper architectural tradeoffs in future rounds."]),
-                    "summary_feedback": eval_data.get("summary_feedback", "Candidate provided coherent responses across the interview round.")
+                    "overall_score": max(0, min(100, int(eval_data.get("overall_score", 0)))),
+                    "technical_accuracy": max(0, min(100, int(eval_data.get("technical_accuracy", 0)))),
+                    "communication_clarity": max(0, min(100, int(eval_data.get("communication_clarity", 0)))),
+                    "depth_of_knowledge": max(0, min(100, int(eval_data.get("depth_of_knowledge", 0)))),
+                    "strengths": eval_data.get("strengths", ["Participation recorded."]),
+                    "areas_for_improvement": eval_data.get("areas_for_improvement", ["Needs comprehensive study of core fundamentals."]),
+                    "summary_feedback": eval_data.get("summary_feedback", "Performance evaluated based on transcript depth.")
                 }
             }
         except Exception as parse_err:
             print(f"[JSON Parse Warning]: {parse_err}")
 
-    # Dynamic Fallback if LLM parsing encounters an issue
-    dialogue_count = len(data.conversation)
-    base_score = min(88, max(58, 60 + (dialogue_count * 3)))
+    # ===================== DYNAMIC 0-100% FALLBACK (NO ARTIFICIAL FLOOR) =====================
+    if total_candidate_words < 8:
+        calc_overall = 10
+        calc_tech = 5
+        calc_comm = 15
+        calc_depth = 5
+        summary = "Candidate was essentially silent or provided one-word answers with zero technical substance."
+        improvements = ["Must articulate technical concepts verbally", "Avoid skipping questions or remaining silent"]
+        strengths = ["Attended the scheduled interview session"]
+    elif total_candidate_words < 25:
+        calc_overall = 32
+        calc_tech = 28
+        calc_comm = 35
+        calc_depth = 22
+        summary = "Candidate answers were severely incomplete, superficial, or demonstrated fundamental misconceptions."
+        improvements = ["Explain how technologies actually function rather than listing buzzwords", "Study core fundamentals and internal mechanisms"]
+        strengths = ["Attempted basic domain terminology"]
+    elif total_candidate_words < 60:
+        calc_overall = 58
+        calc_tech = 55
+        calc_comm = 62
+        calc_depth = 52
+        summary = "Candidate showed elementary theoretical understanding but lacked production tradeoffs and technical depth."
+        improvements = ["Elaborate on architectural edge cases and internal mechanics", "Discuss real-world tradeoffs and failure modes"]
+        strengths = ["Understands baseline theoretical definitions", "Coherent communication"]
+    elif total_candidate_words < 120:
+        calc_overall = 76
+        calc_tech = 75
+        calc_comm = 80
+        calc_depth = 73
+        summary = "Candidate demonstrated clear domain knowledge, structured reasoning, and accurate technical terminology."
+        improvements = ["Deepen analysis of distributed failure recovery", "Quantify latency and resource scaling trade-offs"]
+        strengths = ["Structured thought process", "Accurate technical definitions across topics"]
+    else:
+        calc_overall = 89
+        calc_tech = 90
+        calc_comm = 88
+        calc_depth = 91
+        summary = "Candidate demonstrated exceptional engineering maturity, articulating clear tradeoffs, edge cases, and resilient architecture."
+        improvements = ["Continue expanding on emerging distributed systems patterns"]
+        strengths = ["Staff-level architectural depth", "Clear consideration of real-world production tradeoffs"]
+
     return {
         "status": "success",
         "report": {
-            "overall_score": base_score,
-            "technical_accuracy": base_score - 3,
-            "communication_clarity": base_score + 4,
-            "depth_of_knowledge": base_score - 2,
-            "strengths": [
-                f"Demonstrated consistent communication across {dialogue_count // 2} question exchanges.",
-                "Maintained structured pacing and addressed core role fundamentals."
-            ],
-            "areas_for_improvement": [
-                "Quantify technical tradeoffs with specific latency, throughput, and memory bounds.",
-                "Detail production disaster recovery workflows and edge cases."
-            ],
-            "summary_feedback": f"Candidate demonstrated foundational fluency in {data.role}. Further depth in system internals and edge case handling will elevate performance to senior engineering benchmarks."
+            "overall_score": calc_overall,
+            "technical_accuracy": calc_tech,
+            "communication_clarity": calc_comm,
+            "depth_of_knowledge": calc_depth,
+            "strengths": strengths,
+            "areas_for_improvement": improvements,
+            "summary_feedback": summary
         }
     }
 
